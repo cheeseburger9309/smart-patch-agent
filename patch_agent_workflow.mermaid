@@ -1,0 +1,25 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	input_process(input_process)
+	patch_gen_initial(patch_gen_initial)
+	validate(validate)
+	analyze_failure(analyze_failure)
+	gather_context(gather_context)
+	patch_gen_refine(patch_gen_refine)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> input_process;
+	analyze_failure --> gather_context;
+	gather_context --> patch_gen_refine;
+	input_process --> patch_gen_initial;
+	patch_gen_initial --> validate;
+	patch_gen_refine --> validate;
+	validate -. &nbsp;give_up&nbsp; .-> __end__;
+	validate -. &nbsp;refine&nbsp; .-> analyze_failure;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
