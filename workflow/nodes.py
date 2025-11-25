@@ -1,4 +1,4 @@
-# workflow/nodes.py - FIXED VERSION
+# workflow/nodes.py
 
 from google import genai 
 from typing import Dict
@@ -8,7 +8,6 @@ import json
 import re
 from validator.validator_interface import run_validation
 
-# Initialize the Gemini Client
 client = None
 try:
     client = genai.Client() 
@@ -19,7 +18,6 @@ except Exception as e:
 MODEL = 'gemini-2.5-flash' 
 PROMPTS_DIR = 'prompts' 
 
-# --- Helper to load prompts ---
 def load_prompt(filename):
     """Loads a prompt template from the prompts directory."""
     try:
@@ -28,171 +26,167 @@ def load_prompt(filename):
     except FileNotFoundError:
         raise FileNotFoundError(f"Prompt file not found: {os.path.join(PROMPTS_DIR, filename)}")
 
-# --- NEW: Template Patch Generator (Fallback when Gemini is blocked) ---
-def generate_template_patch(analysis: Dict[str, str], bug_data: Dict) -> str:
+
+def generate_realistic_patch(analysis: Dict[str, str], bug_data: Dict, actual_code: str = None, actual_file_path: str = None) -> str:
     """
-    Generate a template patch based on bug category when Gemini is unavailable.
+    Generate a realistic patch based on actual code context.
     
-    This is a fallback that generates conservative, pattern-based patches.
+    Uses actual code if available, otherwise generates a pattern-based patch.
     """
     bug_type = analysis['bug_type']
-    file_path = analysis['file_path']
+    
+    # Use the actual file path from code fetcher if available
+    if actual_file_path:
+        file_path = actual_file_path
+    else:
+        from workflow.code_fetcher import clean_file_path
+        file_path = clean_file_path(analysis['file_path'])
+    
     line_num = int(analysis['line_number']) if analysis['line_number'].isdigit() else 100
     
-    # Clean up file path (remove build artifacts)
-    if '/../' in file_path:
-        file_path = file_path.split('/../')[-1]
+    if actual_code:
+        # Parse actual code to generate realistic patch
+        lines = actual_code.splitlines()
+        
+        # Find the target line
+        target_line_content = None
+        target_index = -1
+        actual_line_num = line_num
+        
+        for i, line in enumerate(lines):
+            # Extract line number from formatted code
+            if '|' in line:
+                parts = line.split('|', 1)
+                try:
+                    current_line_num = int(parts[0].strip())
+                    if current_line_num == line_num:
+                        target_index = i
+                        target_line_content = parts[1].rstrip()
+                        actual_line_num = current_line_num
+                        break
+                except ValueError:
+                    continue
+        
+        if target_index >= 0 and target_line_content:
+            # Get context lines (without line numbers)
+            context_before = []
+            context_after = []
+            
+            for i in range(max(0, target_index - 3), target_index):
+                if '|' in lines[i]:
+                    line_content = lines[i].split('|', 1)[1].rstrip()
+                    context_before.append(line_content)
+            
+            for i in range(target_index + 1, min(len(lines), target_index + 4)):
+                if '|' in lines[i]:
+                    line_content = lines[i].split('|', 1)[1].rstrip()
+                    context_after.append(line_content)
+            
+            # Generate patch based on bug type
+            if bug_type == 'HEAP_BUFFER_OVERFLOW':
+                # Look for array/buffer access in target line
+                if '[' in target_line_content and ']' in target_line_content:
+                    # Extract indentation
+                    indent = len(target_line_content) - len(target_line_content.lstrip())
+                    indent_str = ' ' * indent
+                    
+                    # Try to extract variable names
+                    match = re.search(r'(\w+)\[([^\]]+)\]', target_line_content)
+                    if match:
+                        array_name = match.group(1)
+                        index_expr = match.group(2)
+                        
+                        # Build patch with bounds check
+                        patch = f"""--- a/{file_path}
++++ b/{file_path}
+@@ -{actual_line_num},6 +{actual_line_num},9 @@"""
+                        
+                        for line in context_before:
+                            patch += f"\n {line}"
+                        
+                        patch += f"\n+{indent_str}if ({index_expr} >= 0 && static_cast<size_t>({index_expr}) < {array_name}_size) {{"
+                        patch += f"\n {target_line_content}"
+                        patch += f"\n+{indent_str}}}"
+                        
+                        for line in context_after[:2]:
+                            patch += f"\n {line}"
+                        
+                        return patch.strip()
+            
+            # Generic fix for any bug type
+            indent = len(target_line_content) - len(target_line_content.lstrip())
+            indent_str = ' ' * indent
+            
+            patch = f"""--- a/{file_path}
++++ b/{file_path}
+@@ -{actual_line_num},6 +{actual_line_num},9 @@"""
+            
+            for line in context_before:
+                patch += f"\n {line}"
+            
+            patch += f"\n+{indent_str}// Add safety check here"
+            patch += f"\n {target_line_content}"
+            
+            for line in context_after[:2]:
+                patch += f"\n {line}"
+            
+            return patch.strip()
     
-    # Generate patch based on bug category
+    # Fallback to minimal template-based patch
     if bug_type == 'HEAP_BUFFER_OVERFLOW':
-        # Template for buffer overflow: Add bounds check
         patch = f"""--- a/{file_path}
 +++ b/{file_path}
-@@ -{line_num},6 +{line_num},9 @@
- void function() {{
-     // Existing code before the bug
-     int index = calculate_index();
-+    if (index < 0 || index >= buffer_size) {{
-+        return;  // Bounds check
+@@ -{line_num},5 +{line_num},8 @@
+     // Context line before
++    if (index >= 0 && static_cast<size_t>(index) < buffer_size) {{
+         buffer[index] = value;
 +    }}
-     buffer[index] = value;  // Line {line_num}: Potential overflow
-     // Existing code after
- }}
-"""
+     // Context line after"""
     
     elif bug_type == 'NULL_POINTER':
         patch = f"""--- a/{file_path}
 +++ b/{file_path}
 @@ -{line_num},5 +{line_num},8 @@
- void function() {{
-     Type* ptr = get_pointer();
-+    if (ptr == nullptr) {{
-+        return;  // Null check
+     // Context line before
++    if (ptr != nullptr) {{
+         ptr->member = value;
 +    }}
-     ptr->member = value;  // Line {line_num}: Potential null dereference
-     // Existing code
- }}
-"""
+     // Context line after"""
     
     elif bug_type == 'USE_AFTER_FREE':
         patch = f"""--- a/{file_path}
 +++ b/{file_path}
-@@ -{line_num},6 +{line_num},9 @@
- void function() {{
-     free(ptr);
-+    ptr = nullptr;  // Prevent use-after-free
-     // ... later code ...
+@@ -{line_num},5 +{line_num},8 @@
+     // Context line before
 +    if (ptr != nullptr) {{
-+        ptr->member = value;  // Line {line_num}: Potential use-after-free
+         ptr->member = value;
 +    }}
- }}
-"""
+     // Context line after"""
     
     else:
-        # Generic safety check
         patch = f"""--- a/{file_path}
 +++ b/{file_path}
 @@ -{line_num},5 +{line_num},8 @@
- void function() {{
-     // Existing code
-+    if (!validate_state()) {{
-+        return;  // Safety check
-+    }}
-     risky_operation();  // Line {line_num}
-     // Existing code
- }}
-"""
+     // Context line before
++    // Add safety check
+     risky_operation();
+     // Context line after"""
     
     return patch.strip()
 
 
-# --- NEW: Sanitize Crash Output for Gemini ---
-def sanitize_crash_output(crash_output: str) -> str:
-    """
-    Clean up crash output to avoid triggering Gemini's safety filters.
-    
-    Removes:
-    - ANSI color codes
-    - Memory addresses
-    - Overly technical content
-    - Keeps only the essential information for patch generation
-    """
-    if not crash_output:
-        return ""
-    
-    # Remove ANSI escape codes (color codes like \u001b[1m)
-    import re
-    ansi_escape = re.compile(r'\x1b\[[0-9;]*m|\x1b\[[\d;]+[A-Za-z]|u001b\[[0-9;]*m')
-    cleaned = ansi_escape.sub('', crash_output)
-    
-    # Extract only the most relevant parts
-    lines = cleaned.split('\n')
-    relevant_lines = []
-    
-    # Keep the error type line
-    for line in lines:
-        if 'ERROR:' in line and 'AddressSanitizer' in line:
-            # Simplify the error line
-            if 'heap-buffer-overflow' in line:
-                relevant_lines.append("ERROR: Heap buffer overflow detected")
-            elif 'use-after-free' in line:
-                relevant_lines.append("ERROR: Use-after-free detected")
-            elif 'null' in line.lower():
-                relevant_lines.append("ERROR: Null pointer dereference")
-            break
-    
-    # Keep the stack trace (most important for identifying the bug location)
-    in_stack_trace = False
-    stack_lines = []
-    for line in lines:
-        # Start of stack trace
-        if line.strip().startswith('#0') or line.strip().startswith('#1'):
-            in_stack_trace = True
-        
-        # Collect stack trace lines (only first 5 for brevity)
-        if in_stack_trace and line.strip().startswith('#') and len(stack_lines) < 5:
-            # Remove memory addresses but keep function and file info
-            # Pattern: #0 0x9bd59d in function_name /path/to/file.cpp:237:16
-            match = re.search(r'#\d+\s+0x[\da-f]+\s+in\s+(.+)\s+(.+):(\d+):\d+', line)
-            if match:
-                func_name, file_path, line_num = match.groups()
-                # Simplify file path
-                if '/../' in file_path:
-                    file_path = file_path.split('/../')[-1]
-                simplified = f"  #{len(stack_lines)} in {func_name} at {file_path}:{line_num}"
-                stack_lines.append(simplified)
-        
-        # Stop after stack trace
-        if in_stack_trace and line.strip() == '':
-            break
-    
-    relevant_lines.extend(stack_lines)
-    
-    # Add a summary line
-    summary_line = f"\nStack trace shows the bug occurs in function at line {stack_lines[0].split(':')[-1] if stack_lines else 'unknown'}"
-    relevant_lines.append(summary_line)
-    
-    return '\n'.join(relevant_lines)
 def clean_gemini_patch_output(raw_output: str) -> str:
     """
     Aggressively clean Gemini's output to extract only the valid patch.
-    
-    Removes:
-    - Markdown code blocks (```diff, ```)
-    - Explanatory text before/after patch
-    - Any non-patch content
     """
-    # Remove markdown code blocks
     cleaned = re.sub(r'```diff\s*\n', '', raw_output)
     cleaned = re.sub(r'```\s*\n', '', cleaned)
     cleaned = re.sub(r'```', '', cleaned)
     
-    # Find where the actual patch starts
     lines = cleaned.splitlines()
     patch_start = -1
     patch_end = len(lines)
     
-    # Look for the start of the patch (--- or diff --git)
     for i, line in enumerate(lines):
         if line.startswith('---') and not line.startswith('---EXPLANATION'):
             patch_start = i
@@ -201,11 +195,9 @@ def clean_gemini_patch_output(raw_output: str) -> str:
             patch_start = i
             break
     
-    # Look for explanatory text after the patch
     if patch_start >= 0:
         for i in range(patch_start + 1, len(lines)):
             line = lines[i].strip()
-            # If we hit explanatory text, stop
             if line and not any([
                 line.startswith('---'),
                 line.startswith('+++'),
@@ -220,20 +212,16 @@ def clean_gemini_patch_output(raw_output: str) -> str:
                 break
     
     if patch_start == -1:
-        print("⚠️  WARNING: Could not find patch start marker (---)")
+        print("WARNING: Could not find patch start marker (---)")
         return raw_output.strip()
     
-    # Extract only the patch portion
     patch_lines = lines[patch_start:patch_end]
     return '\n'.join(patch_lines).strip()
 
-# --- NEW: Patch Format Validator ---
+
 def validate_patch_format(patch: str) -> tuple[bool, list[str]]:
     """
     Validate that a patch follows unified diff format.
-    
-    Returns:
-        (is_valid, errors)
     """
     errors = []
     
@@ -243,7 +231,6 @@ def validate_patch_format(patch: str) -> tuple[bool, list[str]]:
     
     lines = patch.splitlines()
     
-    # Check for required headers
     has_minus_header = any(line.startswith('---') for line in lines)
     has_plus_header = any(line.startswith('+++') for line in lines)
     has_hunk = any(line.startswith('@@') for line in lines)
@@ -255,12 +242,10 @@ def validate_patch_format(patch: str) -> tuple[bool, list[str]]:
     if not has_hunk:
         errors.append("Missing '@@ hunk header")
     
-    # Check for common mistakes
     if '```' in patch:
         errors.append("Contains markdown code blocks (```)")
     
-    # Check for explanatory text
-    for i, line in enumerate(lines[:5]):  # Check first 5 lines
+    for i, line in enumerate(lines[:5]):
         if line and not any([
             line.startswith('---'),
             line.startswith('+++'),
@@ -273,28 +258,20 @@ def validate_patch_format(patch: str) -> tuple[bool, list[str]]:
     is_valid = len(errors) == 0
     return is_valid, errors
 
-# --- NEW: Bug Analysis Helper ---
+
 def analyze_bug_from_data(bug_data: Dict) -> Dict[str, str]:
     """
     Extract key information from bug data for better patch generation.
-    
-    Now uses pre-extracted fields from arvo_data_loader.
     """
-    
-    # Use pre-extracted fields from the data loader
     file_path = bug_data.get('extracted_file_path', 'unknown')
     line_number = bug_data.get('extracted_line_number', '0')
     bug_category = bug_data.get('bug_category', 'UNKNOWN')
     language = bug_data.get('language', 'C++')
     
-    # Get fix hint based on bug category
     from validator.arvo_data_loader import get_fix_hint
     fix_hint = get_fix_hint(bug_category)
     
-    # Clean up file path to be relative if it's absolute
     if file_path.startswith('/'):
-        # Try to extract relative path from absolute path
-        # Look for common patterns like /src/, /include/, etc.
         path_parts = file_path.split('/')
         if 'src' in path_parts:
             idx = path_parts.index('src')
@@ -303,7 +280,6 @@ def analyze_bug_from_data(bug_data: Dict) -> Dict[str, str]:
             idx = path_parts.index('include')
             file_path = '/'.join(path_parts[idx:])
         else:
-            # Use the last few parts of the path
             file_path = '/'.join(path_parts[-3:]) if len(path_parts) >= 3 else path_parts[-1]
     
     return {
@@ -314,72 +290,70 @@ def analyze_bug_from_data(bug_data: Dict) -> Dict[str, str]:
         'language': language
     }
 
-# --- Node 1: Lightweight Patch Generator (IMPROVED) ---
+
 def lightweight_patch_generator_node(state: AgentState) -> AgentState:
     print("--- NODE 1: Lightweight Patch Generator (Gemini Call) ---")
     
-    if client is None:
-        print("⚠️  Gemini client not initialized, using template patch")
-        bug_data = state.get('bug_data', {})
-        analysis = analyze_bug_from_data(bug_data)
-        template_patch = generate_template_patch(analysis, bug_data)
-        state['current_patch'] = template_patch
-        return state
-
-    # Analyze bug for context
     bug_data = state.get('bug_data', {})
     analysis = analyze_bug_from_data(bug_data)
     
-    # CRITICAL: Fetch actual code from repository
     print("[PATCH GEN] Fetching actual code from repository...")
     from workflow.code_fetcher import fetch_code_context, format_code_for_prompt
     
     line_num = int(analysis['line_number']) if analysis['line_number'].isdigit() else 0
-    actual_code = fetch_code_context(bug_data, line_num, context_lines=20)
+    code_result = fetch_code_context(bug_data, line_num, context_lines=20)
     
-    if actual_code:
+    actual_file_path = None
+    actual_code = None
+    
+    if code_result:
+        if isinstance(code_result, tuple):
+            actual_code, actual_file_path = code_result
+        else:
+            actual_code = code_result
+        
         formatted_code = format_code_for_prompt(actual_code, line_num)
-        print(f"[PATCH GEN] ✅ Fetched {len(actual_code.splitlines())} lines of actual code")
+        print(f"[PATCH GEN] Successfully fetched {len(actual_code.splitlines())} lines of actual code")
+        if actual_file_path:
+            print(f"[PATCH GEN] Actual file path: {actual_file_path}")
     else:
-        formatted_code = "// Code fetch failed - using placeholder"
-        print(f"[PATCH GEN] ⚠️  Could not fetch code, using placeholder")
+        formatted_code = "// Code fetch failed - using template"
+        print(f"[PATCH GEN] Could not fetch code, will use template")
     
-    # Create a VERY GENERIC prompt that doesn't mention crashes, exploits, or vulnerabilities
-    # Just talk about "fixing a bug" in neutral terms
-    generic_prompt = f"""You are a code repair assistant helping fix a software bug.
+    if client is None:
+        print("Gemini client not initialized, using template patch")
+        template_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+        state['current_patch'] = template_patch
+        print(f"\nGenerated Template Patch:\n{template_patch}\n")
+        return state
+    
+    # Create very generic prompt
+    generic_prompt = f"""You are a code repair assistant. Generate a patch to fix a bug.
 
-**TASK:** Generate a patch file to fix a bug in C++ code.
+FILE: {actual_file_path if actual_file_path else analysis['file_path']}
+LINE: {analysis['line_number']}
 
-**BUG LOCATION:**
-- File: {analysis['file_path']}  
-- Line: {analysis['line_number']}
-- Category: Array indexing issue
-
-**THE CODE:**
-```cpp
+CODE:
+```
 {formatted_code}
 ```
 
-**WHAT NEEDS TO BE FIXED:**
-The code at line {analysis['line_number']} needs a safety check added before accessing an array or buffer. Add a bounds check to ensure the index is valid before use.
+TASK: Add a safety check at line {analysis['line_number']} to prevent array access issues.
 
-**OUTPUT FORMAT:**
-Generate ONLY a unified diff patch (no explanations, no markdown fences).
+OUTPUT: Unified diff format only (no explanations).
 
-Example format:
---- a/path/to/file.cpp
-+++ b/path/to/file.cpp
-@@ -10,6 +10,9 @@ void function() {{
+Example:
+--- a/path/file.cpp
++++ b/path/file.cpp
+@@ -10,6 +10,9 @@
 +    if (index >= 0 && index < size) {{
          array[index] = value;
 +    }}
- }}
 
-**NOW OUTPUT THE PATCH:**
+NOW OUTPUT THE PATCH:
 """
     
     try:
-        # Try with very generic prompt
         response = client.models.generate_content(
             model=MODEL,
             contents=generic_prompt,
@@ -390,54 +364,54 @@ Example format:
             }
         )
         
-        # Check if response was blocked
         if response.text is None:
-            print("⚠️  WARNING: Gemini blocked even generic prompt")
-            print("⚠️  Falling back to template-based patch generation")
+            print("WARNING: Gemini blocked prompt")
+            print("Falling back to template-based patch generation")
             
-            # Generate template patch as last resort
-            template_patch = generate_template_patch(analysis, bug_data)
+            template_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
             state['current_patch'] = template_patch
-            print(f"✅ Generated template patch for {analysis['bug_type']}")
+            print(f"\nGenerated Template Patch:\n{template_patch}\n")
+            print(f"Generated template patch for {analysis['bug_type']}")
             return state
         
         raw_patch = response.text
-        
-        # Clean the output aggressively
         cleaned_patch = clean_gemini_patch_output(raw_patch)
         
-        print(f"\n📝 Raw Gemini Output ({len(raw_patch)} chars):")
+        print(f"\nRaw Gemini Output ({len(raw_patch)} chars):")
         print("─" * 80)
         print(raw_patch[:300])
         print("─" * 80)
         
-        print(f"\n🧹 Cleaned Patch ({len(cleaned_patch)} chars):")
+        print(f"\nCleaned Patch ({len(cleaned_patch)} chars):")
         print("─" * 80)
         print(cleaned_patch[:300])
         print("─" * 80)
         
-        # Validate format before proceeding
         is_valid, errors = validate_patch_format(cleaned_patch)
         
         if not is_valid:
-            print(f"\n⚠️  WARNING: Generated patch has format issues:")
+            print(f"\nWARNING: Generated patch has format issues:")
             for error in errors:
                 print(f"   - {error}")
-            print("\n❌ This patch will likely fail. Consider improving the prompt.")
+            print("\nFalling back to template patch")
+            template_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+            state['current_patch'] = template_patch
+            print(f"\nGenerated Template Patch:\n{template_patch}\n")
         else:
-            print("\n✅ Patch format validated successfully")
-        
-        state['current_patch'] = cleaned_patch
+            print("\nPatch format validated successfully")
+            state['current_patch'] = cleaned_patch
         
     except Exception as e:
-        print(f"\n❌ LLM Generation Failed: {e}")
-        raise
+        print(f"\nLLM Generation Failed: {e}")
+        print("Falling back to template patch")
+        template_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+        state['current_patch'] = template_patch
+        print(f"\nGenerated Template Patch:\n{template_patch}\n")
     
     print(f"Generated patch: Attempt {state['retry_count'] + 1}")
     return state
 
 
-# --- Node 2: Validation Node (NO CHANGES NEEDED) ---
 def validation_node(state: AgentState) -> AgentState:
     print("--- NODE 2: Validation Node (VM Execution) ---")
     
@@ -478,7 +452,6 @@ def validation_node(state: AgentState) -> AgentState:
     return state
 
 
-# --- Node 3: Failure Analyzer (NO CHANGES) ---
 def failure_analyzer_node(state: AgentState) -> AgentState:
     print("--- NODE 3: Failure Analyzer ---")
     
@@ -496,7 +469,6 @@ def failure_analyzer_node(state: AgentState) -> AgentState:
     return state
 
 
-# --- Node 4: LSP Context Gatherer (NO CHANGES) ---
 def lsp_context_gatherer_node(state: AgentState) -> AgentState:
     print("--- NODE 4: LSP Context Gatherer ---")
     
@@ -512,35 +484,52 @@ def lsp_context_gatherer_node(state: AgentState) -> AgentState:
     return state
 
 
-# --- Node 5: Refinement Patch Generator (IMPROVED) ---
 def refinement_patch_generator_node(state: AgentState) -> AgentState:
     print("--- NODE 5: Refinement Patch Generator (Gemini Call) ---")
     
+    bug_data = state.get('bug_data', {})
+    analysis = analyze_bug_from_data(bug_data)
+    
     if client is None:
-        print("⚠️  Gemini client not initialized, using mock patch")
-        state['current_patch'] = state['current_patch']  # Keep same patch
+        print("Gemini client not initialized, generating improved template")
+        
+        from workflow.code_fetcher import fetch_code_context
+        line_num = int(analysis['line_number']) if analysis['line_number'].isdigit() else 0
+        code_result = fetch_code_context(bug_data, line_num, context_lines=20)
+        
+        actual_file_path = None
+        actual_code = None
+        
+        if code_result:
+            if isinstance(code_result, tuple):
+                actual_code, actual_file_path = code_result
+            else:
+                actual_code = code_result
+        
+        improved_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+        state['current_patch'] = improved_patch
+        print(f"\nGenerated Improved Template Patch:\n{improved_patch}\n")
         return state
 
     prompt_template = load_prompt('patch_refinement.txt')
     
-    # Add detailed failure information
     validation_error = state['validation_result'].get('logs', 'Unknown error')[:1000]
     
     full_prompt = f"""{prompt_template}
 
-## PREVIOUS FAILURE
+PREVIOUS FAILURE
 {state['failure_reason']}
 
-## PREVIOUS PATCH (FAILED)
+PREVIOUS PATCH (FAILED)
 {state['current_patch']}
 
-## VALIDATION ERROR
+VALIDATION ERROR
 {validation_error}
 
-## LSP CONTEXT
+LSP CONTEXT
 {state['lsp_context']}
 
-## NOW OUTPUT IMPROVED PATCH (unified diff format only):
+NOW OUTPUT IMPROVED PATCH (unified diff format only):
 """
     
     try:
@@ -551,26 +540,79 @@ def refinement_patch_generator_node(state: AgentState) -> AgentState:
         )
         
         if response.text is None:
-            raise Exception("Gemini returned None during refinement")
+            print("WARNING: Gemini blocked refinement prompt")
+            print("Generating improved template patch")
+            
+            from workflow.code_fetcher import fetch_code_context
+            line_num = int(analysis['line_number']) if analysis['line_number'].isdigit() else 0
+            code_result = fetch_code_context(bug_data, line_num, context_lines=20)
+            
+            actual_file_path = None
+            actual_code = None
+            
+            if code_result:
+                if isinstance(code_result, tuple):
+                    actual_code, actual_file_path = code_result
+                else:
+                    actual_code = code_result
+            
+            improved_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+            state['current_patch'] = improved_patch
+            print(f"\nGenerated Improved Template Patch:\n{improved_patch}\n")
+            return state
         
         raw_patch = response.text
         cleaned_patch = clean_gemini_patch_output(raw_patch)
         
-        print(f"\n🔧 Refined Patch ({len(cleaned_patch)} chars):")
+        print(f"\nRefined Patch ({len(cleaned_patch)} chars):")
         print("─" * 80)
         print(cleaned_patch[:300])
         print("─" * 80)
         
-        # Validate
         is_valid, errors = validate_patch_format(cleaned_patch)
         if not is_valid:
-            print(f"⚠️  Refined patch still has issues: {errors}")
-        
-        state['current_patch'] = cleaned_patch
+            print(f"WARNING: Refined patch still has issues: {errors}")
+            print("Using improved template instead")
+            
+            from workflow.code_fetcher import fetch_code_context
+            line_num = int(analysis['line_number']) if analysis['line_number'].isdigit() else 0
+            code_result = fetch_code_context(bug_data, line_num, context_lines=20)
+            
+            actual_file_path = None
+            actual_code = None
+            
+            if code_result:
+                if isinstance(code_result, tuple):
+                    actual_code, actual_file_path = code_result
+                else:
+                    actual_code = code_result
+            
+            improved_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+            state['current_patch'] = improved_patch
+            print(f"\nGenerated Improved Template Patch:\n{improved_patch}\n")
+        else:
+            state['current_patch'] = cleaned_patch
         
     except Exception as e:
-        print(f"❌ Refinement failed: {e}")
-        raise
+        print(f"Refinement failed: {e}")
+        print("Generating improved template patch")
+        
+        from workflow.code_fetcher import fetch_code_context
+        line_num = int(analysis['line_number']) if analysis['line_number'].isdigit() else 0
+        code_result = fetch_code_context(bug_data, line_num, context_lines=20)
+        
+        actual_file_path = None
+        actual_code = None
+        
+        if code_result:
+            if isinstance(code_result, tuple):
+                actual_code, actual_file_path = code_result
+            else:
+                actual_code = code_result
+        
+        improved_patch = generate_realistic_patch(analysis, bug_data, actual_code, actual_file_path)
+        state['current_patch'] = improved_patch
+        print(f"\nGenerated Improved Template Patch:\n{improved_patch}\n")
     
     print("Generated refinement patch. Preparing for re-validation.")
     return state
