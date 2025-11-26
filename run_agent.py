@@ -1,5 +1,29 @@
 # run_agent.py
 
+import os
+from pathlib import Path
+
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    env_path = Path('.') / '.env'
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        print("Loaded environment variables from .env file")
+    else:
+        print("No .env file found, using system environment variables")
+except ImportError:
+    print("python-dotenv not installed, using system environment variables")
+
+# Verify API key is set
+api_key = os.environ.get('MISTRAL_API_KEY')
+if api_key:
+    print(f"MISTRAL_API_KEY is set (length: {len(api_key)} chars)")
+else:
+    print("WARNING: MISTRAL_API_KEY is not set!")
+    print("Set it with: export MISTRAL_API_KEY='your_key_here'")
+    print("Or create a .env file with: MISTRAL_API_KEY=your_key_here")
+
 # Import from the installed library
 from langgraph.graph import START, END, StateGraph 
 
@@ -7,16 +31,14 @@ from langgraph.graph import START, END, StateGraph
 from workflow.graph_builder import build_patch_agent_graph
 from workflow.state import AgentState, PatchAttempt
 
-# --- 1. Define Mock Input Data ---
+# Define Mock Input Data
 initial_state_input: AgentState = {
-    # Use a real ARVO ID to test remote database loading
     "bug_id": "40096184", 
     "initial_crash_log": "Placeholder log, actual log loaded from DB.",
     "buggy_code_snippet": "Placeholder snippet, actual code fetched on VM.",
     "max_retries": 3, 
     
-    # Initialize dynamic/complex fields (must match state.py definition)
-    "bug_data": {},  # Will be populated by Input Processor Node
+    "bug_data": {},
     "all_patches": [],
     "current_patch": "",
     "validation_result": {},
@@ -26,7 +48,6 @@ initial_state_input: AgentState = {
 }
 
 
-# --- 2. Main Execution Function ---
 def run_test_workflow():
     """Builds the graph, generates the visualization, and executes the workflow."""
     
@@ -35,7 +56,7 @@ def run_test_workflow():
     # Build the compiled LangGraph application
     app = build_patch_agent_graph()
     
-    # --- Generate Visualization (Mermaid Format) ---
+    # Generate Visualization (Mermaid Format)
     try:
         graph_object = app.get_graph()
         mermaid_text = graph_object.draw_mermaid()
@@ -49,8 +70,6 @@ def run_test_workflow():
         
     except Exception as e:
         print(f"\n Could not generate graph image in Mermaid format. Error: {e}")
-        
-    # --- End Visualization ---
 
     inputs = initial_state_input.copy()
 
@@ -74,7 +93,8 @@ def run_test_workflow():
         
     except Exception as e:
         print(f"\n A critical error occurred during graph execution: {e}")
+        import traceback
+        traceback.print_exc()
 
-# --- 3. Execute the Script ---
 if __name__ == "__main__":
     run_test_workflow()

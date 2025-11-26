@@ -1,0 +1,82 @@
+[
+  {
+    "bug_id": 424242614,
+    "status": "SUCCESS",
+    "attempts": 0,
+    "duration": 35.62,
+    "failure_reason": "",
+    "final_patch": "--- a/parser.c\n+++ b/parser.c\n@@ -4457,3 +4457,6 @@\n \tbuf[len++] = cur;\n \tNEXT;\n+\tif (ctxt->input->cur >= ctxt->input->end) {\n+\t    break; /* Reached end of input, prevent OOB read */\n+\t}\n \tcur = CUR;\n"
+  },
+  {
+    "bug_id": 420638555,
+    "status": "SUCCESS",
+    "attempts": 2,
+    "duration": 97.33,
+    "failure_reason": "COMPILE_ERROR",
+    "final_patch": "--- a/tree.c\n+++ b/tree.c\n@@ -5532,1 +5532,3 @@\n+        // [SmartPatch] Safety Check\n+        if (!ptr) return 0; // Return an error code if ptr is NULL\n+        return(1);\n"
+  },
+  {
+    "bug_id": 420248736,
+    "status": "SUCCESS",
+    "attempts": 0,
+    "duration": 39.0,
+    "failure_reason": "",
+    "final_patch": "--- a/fuzz/api.c\n+++ b/fuzz/api.c\n@@ -637,3 +637,6 @@\n static void\n dropNode(xmlNodePtr node) {\n+    if (node == NULL) {\n+        return;\n+    }\n     xmlNodePtr *nodes = vars->nodes;\n     xmlNodePtr tree;\n"
+  },
+  {
+    "bug_id": 418569736,
+    "status": "SUCCESS",
+    "attempts": 0,
+    "duration": 18.4,
+    "failure_reason": "",
+    "final_patch": "--- a/quickjs.c\n+++ b/quickjs.c\n@@ -15494,2 +15494,3 @@\n     it->atom_count = 0;\n+    if (!it) return JS_EXCEPTION;\n     it->in_prototype_chain = FALSE;\n"
+  },
+  {
+    "bug_id": 417247563,
+    "status": "FAILED",
+    "attempts": 4,
+    "duration": 113.25,
+    "failure_reason": "COMPILE_ERROR",
+    "final_patch": "--- a/file.cpp\n+++ b/file.cpp\n@@ -62,2 +62,3 @@\n     // Assume this is line 62, providing context\n+    if (some_ptr == nullptr) return; // Null check\n     original_code_line_63(); // This was line 63, now it's line 64\n"
+  },
+  {
+    "bug_id": 417062198,
+    "status": "FAILED",
+    "attempts": 4,
+    "duration": 88.5,
+    "failure_reason": "COMPILE_ERROR",
+    "final_patch": "--- a/file.cpp\n+++ b/file.cpp\n@@ -62,0 +63,4 @@\n+    if (some_ptr == nullptr || some_index < 0 || some_index >= some_size) {\n+        // Handle error: log, throw, or return to prevent memory access\n+        return nullptr; // Assuming the function has a pointer return type. Adjust if it's int, bool, etc.\n+    }\n"
+  },
+  {
+    "bug_id": 414383025,
+    "status": "FAILED",
+    "attempts": 4,
+    "duration": 314.42,
+    "failure_reason": "COMPILE_ERROR",
+    "final_patch": "--- a/base/sjpx_openjpeg.c\n+++ b/base/sjpx_openjpeg.c\n@@ -322,10 +322,10 @@\n     // some code\n     // some code\n     // some line\n+    if (!row) return;\n     int row_size = row->w * row->comps[0].prec / 8;\n     if (row_size < 3)\n         return;\n     row_size = row_size - row_size % 3;\n-    if (!row) return;\n     do\n     {\n"
+  },
+  {
+    "bug_id": 403364362,
+    "status": "SUCCESS",
+    "attempts": 0,
+    "duration": 46.77,
+    "failure_reason": "",
+    "final_patch": "--- a/modules/imgcodecs/src/grfmt_gif.cpp\n+++ b/modules/imgcodecs/src/grfmt_gif.cpp\n@@ -344,2 +344,3 @@\n         }\n+                if (idx >= m_width * m_height) return;\n                 // [SmartPatch] Safety Check  <<<< BUG HERE\n"
+  },
+  {
+    "bug_id": 402451731,
+    "status": "SUCCESS",
+    "attempts": 0,
+    "duration": 65.76,
+    "failure_reason": "",
+    "final_patch": "--- a/pdf/pdf_file.c\n+++ b/pdf/pdf_file.c\n@@ -113,3 +113,4 @@\n     if (code < 0) {\n         gs_free_object(mem, sst, \"pdfi_filter_open(stream_state)\");\n+        if (s != NULL) gs_free_object(mem, s, \"pdfi_filter_open(stream)\");\n         return code;\n     }\n"
+  },
+  {
+    "bug_id": 401846983,
+    "status": "FAILED",
+    "attempts": 4,
+    "duration": 267.72,
+    "failure_reason": "COMPILE_ERROR",
+    "final_patch": "--- a/base/gdevnfwd.c\n+++ b/base/gdevnfwd.c\n@@ -33,1 +33,4 @@\n+// [SmartPatch] Safety Check\n+if (!ptr) return;\n gx_device_set_target(gx_device_forward *fdev, gx_device *target)\n"
+  }
+]

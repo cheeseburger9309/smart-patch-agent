@@ -1,0 +1,25 @@
+================================================================================
+SMART PATCH AGENT - RESULTS
+================================================================================
+
+Bug ID: 40096184
+Status: FAILED
+Attempts: 4
+
+FINAL PATCH:
+--------------------------------------------------------------------------------
+--- a/src/codec/SkSwizzler.cpp
++++ b/src/codec/SkSwizzler.cpp
+@@ -237,4 +237,7 @@
+     // Context before
++    if (index < 0 || index >= size) {
++        return;  // Bounds check
++    }
+     }
+     // Context after
+--------------------------------------------------------------------------------
+
+VALIDATION RESULTS:
+--------------------------------------------------------------------------------
+{'compiled': False, 'poc_crash_detected': True, 'functional_tests_passed': False, 'logs': "Patch failed to apply cleanly.\nStdout: can't find file to patch at input line 3\nPerhaps you used the wrong -p or --strip option?\nThe text leading up to this was:\n--------------------------\n|--- a/src/codec/SkSwizzler.cpp\n|+++ b/src/codec/SkSwizzler.cpp\n--------------------------\nNo file to patch.  Skipping patch.\npatch unexpectedly ends in middle of line\n1 out of 1 hunk ignored\nStderr: "}
+--------------------------------------------------------------------------------
